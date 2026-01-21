@@ -67,6 +67,7 @@ class ERA5ResumeDownloadApp(ctk.CTk):
         self.total_bytes = 0
         self.last_bytes = 0
         self.lock = threading.Lock()
+        self.speed_reset_threshold = 1024 * 1024 * 1024  # 1GB后重置计数器
 
         # 断点续传配置
         self.max_retries = 6  # 最大重试次数
@@ -348,6 +349,13 @@ class ERA5ResumeDownloadApp(ctk.CTk):
         with self.lock: curr = self.total_bytes
         diff = curr - self.last_bytes
         self.last_bytes = curr
+
+        # 定期重置total_bytes，避免数值过大影响性能
+        if curr > self.speed_reset_threshold:
+            with self.lock:
+                self.total_bytes = 0
+                self.last_bytes = 0
+
         self.speed_label.configure(text=f"当前速度: {diff / 1048576:.2f} MB/s")
         self.after(1000, self.monitor_speed)
 
@@ -355,7 +363,15 @@ class ERA5ResumeDownloadApp(ctk.CTk):
         try:
             prefix = f"e5.oper.an.pl/{date_str}/"
 
-            s3_config = Config(signature_version=UNSIGNED, max_pool_connections=max_workers + 5)
+            # 优化S3客户端配置，提升性能
+            s3_config = Config(
+                signature_version=UNSIGNED,
+                max_pool_connections=max_workers * 2,  # 增加连接池大小
+                tcp_keepalive=True,  # 启用TCP keepalive保持连接活跃
+                connect_timeout=10,  # 连接超时10秒
+                read_timeout=30,  # 读取超时30秒
+                retries={'max_attempts': 2}  # 限制内部重试次数
+            )
             self.s3_client = boto3.client('s3', config=s3_config)
 
             wanted_vars = self.get_selected_vars()
@@ -365,6 +381,10 @@ class ERA5ResumeDownloadApp(ctk.CTk):
             # 清空失败文件列表
             with self.lock_failed:
                 self.failed_files.clear()
+
+            # 记录性能监控开始时间
+            perf_start_time = time.time()
+            perf_file_count = 0
 
             paginator = self.s3_client.get_paginator('list_objects_v2')
             files_to_download = []
@@ -427,9 +447,20 @@ class ERA5ResumeDownloadApp(ctk.CTk):
                     futures.append(executor.submit(
                         self.download_one_with_resume, f_info, target_dir, transfer_cfg, slot_queue
                     ))
-                for f in futures:
+
+                # 等待所有任务完成
+                for i, f in enumerate(futures):
                     try:
                         f.result()
+                        perf_file_count += 1
+
+                        # 每完成10个文件记录一次性能状态
+                        if perf_file_count % 10 == 0:
+                            elapsed = time.time() - perf_start_time
+                            speed = (perf_file_count * 100) / elapsed if elapsed > 0 else 0
+                            print(f"[性能监控] 已完成 {perf_file_count}/{len(remaining_files)} 个文件, "
+                                  f"耗时 {elapsed:.1f}秒, 平均速度 {speed:.2f} 文件/分钟")
+
                     except DownloadStoppedException:
                         # 用户停止下载，不记录为失败
                         pass
@@ -627,7 +658,9 @@ class ERA5ResumeDownloadApp(ctk.CTk):
 
                         pct = downloaded / remote_size
                         t = time.time()
-                        if t - cb.last_t > 0.1 or pct >= 1.0:
+                        # 动态调整UI更新频率：大文件更新频率低，小文件更新频率高
+                        update_interval = max(0.2, min(1.0, remote_size / 100_000_000))
+                        if t - cb.last_t > update_interval or pct >= 1.0:
                             # 显示百分比和已下载大小
                             status_text = f"{int(pct * 100)}%"
                             if retry > 0:
