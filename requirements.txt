@@ -1,0 +1,18 @@
+# ERA5 数据下载工具依赖清单
+
+# GUI 框架
+customtkinter>=5.0.0
+
+# AWS SDK for Python
+boto3>=1.28.0
+botocore>=1.31.0
+
+# 可选：测试框架
+pytest>=7.0.0
+pytest-qt>=4.0.0
+pytest-mock>=3.10.0
+
+# 可选：代码质量工具
+black>=23.0.0
+pylint>=2.17.0
+mypy>=1.0.0
