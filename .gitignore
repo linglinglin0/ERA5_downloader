@@ -24,7 +24,9 @@ ENV/
 *.bak
 
 # 下载的数据目录
+data/
 era5_data/
+数据下载/
 *.nc
 *.nc.tmp
 *.nc.tmp.*
@@ -36,7 +38,7 @@ htmlcov/
 .tox/
 
 # 构建文件
-dist/
+# dist/ 保留dist目录用于分发包配置
 build/
 *.egg-info/
 
@@ -51,3 +53,6 @@ Thumbs.db
 .era5_gui_config.json
 .era5_download_progress.json
 download_errors.log
+
+# 旧版分发包
+*.zip
