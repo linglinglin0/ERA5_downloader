@@ -1,0 +1,12 @@
+[project]
+name = "era5-download"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "boto3>=1.28.0",
+    "botocore>=1.31.0",
+    "customtkinter>=5.2.2",
+    "netcdf4>=1.7.4",
+    "psutil>=7.2.2",
+]

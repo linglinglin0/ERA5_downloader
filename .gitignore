@@ -1,0 +1,40 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.pyc
+
+# Virtual environments
+.venv
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Configuration and runtime files
+.era5_gui_config.json
+.era5_download_progress.json
+download_errors.log
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test files
+check_process.py
+read_nc.py
+read_nc_info.py
+read_nc_simple.py
+test_*.py
