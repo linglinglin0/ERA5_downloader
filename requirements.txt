@@ -7,6 +7,15 @@ customtkinter>=5.0.0
 boto3>=1.28.0
 botocore>=1.31.0
 
+# 数据处理
+netCDF4>=1.6.0
+
+# 系统监控
+psutil>=5.9.0
+
+# 可视化
+matplotlib>=3.7.0
+
 # 可选：测试框架
 pytest>=7.0.0
 pytest-qt>=4.0.0
