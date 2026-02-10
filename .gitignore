@@ -20,12 +20,23 @@ venv/
 # Configuration and runtime files
 .era5_gui_config.json
 .era5_download_progress.json
+.era5_auto_recovery_config.json
 download_errors.log
+auto_restart_log.json
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Version files
+.python-version
 
 # Temporary files
 *.tmp
 *.bak
 *.log
+*.lnk
 
 # OS
 .DS_Store
