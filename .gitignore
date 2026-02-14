@@ -49,3 +49,12 @@ read_nc.py
 read_nc_info.py
 read_nc_simple.py
 test_*.py
+
+# Archive and old versions
+ERA5download_GUI_v*.py
+archive/
+docs/archive/
+
+# Claude Code and workflow
+.claude/
+.spec-workflow/
