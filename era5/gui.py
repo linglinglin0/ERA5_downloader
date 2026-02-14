@@ -5,6 +5,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError, ConnectionError, EndpointConnectionError
 from boto3.s3.transfer import TransferConfig
 import os
+import sys
 import threading
 import time
 import queue
@@ -21,10 +22,10 @@ ctk.set_default_color_theme("dark-blue")
 ERA5_VARS = {
     "动力与热力学": {
         "t": "空气温度 (K)", "u": "U风分量 (m/s)", "v": "V风分量 (m/s)",
-        "w": "垂直速度 (Pa/s)", "z": "位势", "d": "散度", "vo": "相对涡度", "pv": "位涡"
+        "w": "垂直速度 (Pa/s)", "z": "位势高度", "d": "散度", "vo": "相对涡度", "pv": "位涡"
     },
     "湿度与云物理": {
-        "q": "比湿", "r": "相对湿度", "cc": "云量", "ciwc": "云冰含量",
+        "q": "比湿", "r": "相对湿度", "cc": "云量", "ciwc": "云冰水含量",
         "clwc": "云液水含量", "crwc": "雨水含量", "cswc": "雪水含量"
     },
     "化学成分": {
@@ -457,7 +458,7 @@ class ERA5ResumeDownloadApp(ctk.CTk):
                         # 每完成10个文件记录一次性能状态
                         if perf_file_count % 10 == 0:
                             elapsed = time.time() - perf_start_time
-                            speed = (perf_file_count * 100) / elapsed if elapsed > 0 else 0
+                            speed = (perf_file_count * 60) / elapsed if elapsed > 0 else 0
                             print(f"[性能监控] 已完成 {perf_file_count}/{len(remaining_files)} 个文件, "
                                   f"耗时 {elapsed:.1f}秒, 平均速度 {speed:.2f} 文件/分钟")
 
@@ -628,15 +629,16 @@ class ERA5ResumeDownloadApp(ctk.CTk):
                     # 文件已经下载完成
                     return
 
-                # 使用 Range 请求
-                range_header = f"bytes={start_byte}-"
+                # 使用 Range 请求（仅当需要断点续传时）
+                get_params = {
+                    'Bucket': self.bucket_name,
+                    'Key': f_info['Key']
+                }
+                if start_byte > 0:
+                    get_params['Range'] = f"bytes={start_byte}-"
 
                 # 获取对象
-                response = self.s3_client.get_object(
-                    Bucket=self.bucket_name,
-                    Key=f_info['Key'],
-                    Range=range_header
-                )
+                response = self.s3_client.get_object(**get_params)
 
                 # 写入文件(追加模式)
                 mode = 'ab' if start_byte > 0 else 'wb'
@@ -760,6 +762,267 @@ class ERA5ResumeDownloadApp(ctk.CTk):
         self.after(0, _r)
 
 
+# ================= 无GUI自动下载类 =================
+class AutoDownloader:
+    """无GUI的自动下载器"""
+    def __init__(self):
+        self.bucket_name = 'nsf-ncar-era5'
+        self.s3_client = None
+        self.stop_requested = False
+        self.current_download_dir = None
+        self.max_retries = 6
+        self.retry_delay = 2
+        self.progress_file = ".era5_download_progress.json"
+        self.chunk_size = 8 * 1024 * 1024
+        self.failed_files = []
+        self.config = None
+
+    def load_config(self):
+        """加载配置文件"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+                print(f"[配置] 成功加载配置文件")
+                print(f"  日期: {self.config['date']}")
+                print(f"  路径: {self.config['local_root']}")
+                print(f"  线程: {self.config['thread_count']}")
+                print(f"  变量: {self.config['selected_vars'] if self.config['selected_vars'] else '全部'}")
+                return True
+            else:
+                print("[配置] 配置文件不存在，需要手动创建")
+                return False
+        except Exception as e:
+            print(f"[配置] 加载失败: {e}")
+            return False
+
+    def get_selected_vars(self):
+        if not self.config:
+            return []
+        return self.config.get('selected_vars', [])
+
+    def save_progress(self, target_dir, progress_data):
+        """保存下载进度"""
+        try:
+            progress_file = os.path.join(target_dir, self.progress_file)
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[进度] 保存失败: {e}")
+
+    def load_progress(self, target_dir):
+        """加载下载进度"""
+        try:
+            progress_file = os.path.join(target_dir, self.progress_file)
+            if os.path.exists(progress_file):
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"[进度] 加载失败: {e}")
+        return None
+
+    def update_progress(self, target_dir, filename, completed=False):
+        """更新下载进度"""
+        progress_data = self.load_progress(target_dir)
+        if progress_data is None:
+            progress_data = {'completed': [], 'date': time.strftime('%Y-%m-%d %H:%M:%S')}
+
+        if completed and filename not in progress_data['completed']:
+            progress_data['completed'].append(filename)
+            self.save_progress(target_dir, progress_data)
+
+    def format_size(self, bytes_size):
+        """格式化文件大小"""
+        if bytes_size < 1024 * 1024:
+            return f"{bytes_size / 1024:.1f}KB"
+        else:
+            return f"{bytes_size / 1048576:.1f}MB"
+
+    def run(self):
+        """执行自动下载"""
+        if not self.load_config():
+            return False
+
+        date_str = self.config['date']
+        local_root = self.config['local_root']
+        max_workers = self.config['thread_count']
+
+        print(f"\n{'='*60}")
+        print(f"ERA5 自动下载启动")
+        print(f"{'='*60}")
+        print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"目标日期: {date_str}")
+        print(f"保存目录: {local_root}")
+        print(f"并发线程: {max_workers}")
+        print(f"{'='*60}\n")
+
+        try:
+            prefix = f"e5.oper.an.pl/{date_str}/"
+
+            # S3配置
+            s3_config = Config(
+                signature_version=UNSIGNED,
+                max_pool_connections=max_workers * 2,
+                tcp_keepalive=True,
+                connect_timeout=10,
+                read_timeout=30,
+                retries={'max_attempts': 2}
+            )
+            self.s3_client = boto3.client('s3', config=s3_config)
+
+            wanted_vars = self.get_selected_vars()
+            print(f"[扫描] 正在扫描 S3 存储桶...")
+            print(f"[扫描] 目标变量: {wanted_vars if wanted_vars else '全部'}\n")
+
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            files_to_download = []
+
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        fname = os.path.basename(key)
+                        try:
+                            parts = fname.split('.')
+                            var_segment = parts[4]
+                            current_var = var_segment.split('_')[-1]
+                        except:
+                            current_var = "unknown"
+
+                        if not wanted_vars or current_var in wanted_vars:
+                            files_to_download.append(
+                                {'Key': key, 'Size': obj['Size'], 'Var': current_var, 'Name': fname})
+
+            if not files_to_download:
+                print(f"[结果] 未找到匹配的文件!")
+                return True
+
+            print(f"[扫描] 找到 {len(files_to_download)} 个文件")
+
+            target_dir = os.path.join(local_root, date_str)
+            if not os.path.exists(target_dir): os.makedirs(target_dir)
+            self.current_download_dir = target_dir
+
+            # 加载进度
+            progress_data = self.load_progress(target_dir)
+            completed_files = set()
+            if progress_data and 'completed' in progress_data:
+                completed_files = set(progress_data['completed'])
+
+            remaining_files = [f for f in files_to_download if f['Name'] not in completed_files]
+
+            if not remaining_files:
+                print(f"[进度] 所有文件已下载完成!")
+                print(f"[结果] 保存位置: {target_dir}")
+                return True
+
+            print(f"[进度] 已完成 {len(completed_files)}, 剩余 {len(remaining_files)}\n")
+
+            # 开始下载
+            slot_queue = queue.Queue()
+            for i in range(max_workers):
+                slot_queue.put(i)
+
+            transfer_cfg = TransferConfig(use_threads=False)
+
+            completed_count = 0
+            failed_count = 0
+            start_time = time.time()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {}
+                for f_info in remaining_files:
+                    if self.stop_requested: break
+                    futures[executor.submit(
+                        self.download_one, f_info, target_dir, transfer_cfg, slot_queue
+                    )] = f_info
+
+                for future in futures:
+                    try:
+                        future.result()
+                        completed_count += 1
+
+                        # 进度输出
+                        if completed_count % 10 == 0 or completed_count == len(remaining_files):
+                            elapsed = time.time() - start_time
+                            speed = (completed_count * 60) / elapsed if elapsed > 0 else 0
+                            print(f"[进度] {completed_count}/{len(remaining_files)} | "
+                                  f"耗时: {elapsed:.1f}秒 | 速度: {speed:.1f} 文件/分钟")
+
+                    except Exception as e:
+                        failed_count += 1
+                        print(f"[错误] {futures[future]['Name']}: {e}")
+
+            # 结果统计
+            elapsed = time.time() - start_time
+            print(f"\n{'='*60}")
+            print(f"下载完成!")
+            print(f"{'='*60}")
+            print(f"成功: {completed_count} 个文件")
+            print(f"失败: {failed_count} 个文件")
+            print(f"耗时: {elapsed/60:.1f} 分钟")
+            print(f"平均速度: {(completed_count*60)/elapsed:.1f} 文件/分钟")
+            print(f"保存位置: {target_dir}")
+            print(f"完成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*60}\n")
+
+            return True
+
+        except Exception as e:
+            print(f"[错误] 下载失败: {e}")
+            traceback.print_exc()
+            return False
+
+    def download_one(self, f_info, target_dir, cfg, slot_queue):
+        """下载单个文件"""
+        sid = slot_queue.get()
+        local_path = os.path.join(target_dir, f_info['Name'])
+        temp_path = local_path + ".tmp"
+
+        try:
+            # 检查本地文件
+            if os.path.exists(local_path):
+                local_size = os.path.getsize(local_path)
+                if local_size == f_info['Size']:
+                    return  # 已存在
+
+            # 断点续传
+            downloaded_bytes = 0
+            if os.path.exists(temp_path):
+                downloaded_bytes = os.path.getsize(temp_path)
+                if downloaded_bytes >= f_info['Size']:
+                    os.remove(temp_path)
+                    downloaded_bytes = 0
+
+            # Range请求（仅当需要断点续传时）
+            get_params = {
+                'Bucket': self.bucket_name,
+                'Key': f_info['Key']
+            }
+            if downloaded_bytes > 0:
+                get_params['Range'] = f"bytes={downloaded_bytes}-"
+
+            response = self.s3_client.get_object(**get_params)
+
+            mode = 'ab' if downloaded_bytes > 0 else 'wb'
+            with open(temp_path, mode) as f:
+                for chunk in response['Body'].iter_chunks(chunk_size=self.chunk_size):
+                    f.write(chunk)
+
+            # 验证并重命名
+            final_size = os.path.getsize(temp_path)
+            if final_size == f_info['Size']:
+                os.rename(temp_path, local_path)
+                self.update_progress(target_dir, f_info['Name'], completed=True)
+            else:
+                raise FileIncompleteException(f"大小不匹配: {final_size} != {f_info['Size']}")
+
+        except Exception as e:
+            raise
+        finally:
+            slot_queue.put(sid)
+
+
 # 全局回调对象(用于进度更新)
 class CallbackWrapper:
     def __init__(self):
@@ -769,6 +1032,25 @@ class CallbackWrapper:
 cb = CallbackWrapper()
 
 
+# ================= 主程序入口 =================
 if __name__ == "__main__":
-    app = ERA5ResumeDownloadApp()
-    app.mainloop()
+    # 检查命令行参数
+    auto_mode = '--auto' in sys.argv or '-a' in sys.argv
+
+    if auto_mode:
+        # 自动模式：配置文件存在则直接下载
+        print("=" * 60)
+        print("ERA5 自动下载模式")
+        print("=" * 60)
+        downloader = AutoDownloader()
+        success = downloader.run()
+        if success:
+            print("[完成] 下载任务完成")
+            sys.exit(0)
+        else:
+            print("[失败] 配置文件不存在，请先运行GUI模式创建配置")
+            sys.exit(1)
+    else:
+        # GUI模式：正常显示界面
+        app = ERA5ResumeDownloadApp()
+        app.mainloop()
