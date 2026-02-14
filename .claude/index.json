@@ -1,0 +1,159 @@
+{
+  "project_name": "20260119 ERA5数据下载",
+  "last_scan": "2026-01-19T20:38:39+08:00",
+  "scan_config": {
+    "ignore_patterns": [
+      "node_modules/**",
+      ".git/**",
+      ".github/**",
+      "dist/**",
+      "build/**",
+      ".next/**",
+      "__pycache__/**",
+      "*.lock",
+      "*.log",
+      "*.bin",
+      "*.pdf",
+      "*.png",
+      "*.jpg",
+      "*.jpeg",
+      "*.gif",
+      "*.mp4",
+      "*.zip",
+      "*.tar",
+      "*.gz"
+    ],
+    "scan_depth": "full",
+    "scan_mode": "adaptive"
+  },
+  "summary": {
+    "total_files": 8,
+    "scanned_files": 8,
+    "coverage_percentage": 100,
+    "languages": {
+      "Python": 1,
+      "Markdown": 7
+    },
+    "modules": [
+      {
+        "name": "ERA5download_GUI.py",
+        "type": "core_application",
+        "language": "Python",
+        "lines_of_code": 389,
+        "description": "主应用程序 - GUI 界面与 ERA5 数据下载逻辑",
+        "entry_point": "ERA5download_GUI.py",
+        "has_tests": false,
+        "has_config": false,
+        "coverage": "full"
+      },
+      {
+        "name": ".spec-workflow",
+        "type": "documentation",
+        "language": "Markdown",
+        "description": "工作流模板文件（需求/设计/任务等）",
+        "coverage": "partial"
+      }
+    ]
+  },
+  "modules": {
+    "ERA5download_GUI.py": {
+      "path": "ERA5download_GUI.py",
+      "type": "core_application",
+      "language": "Python",
+      "responsibilities": [
+        "GUI 界面构建",
+        "S3 数据下载",
+        "多线程并发管理",
+        "进度监控",
+        "断点续传",
+        "临时文件清理"
+      ],
+      "entry_points": [
+        "ERA5CleanStopApp.__init__()",
+        "if __name__ == '__main__'"
+      ],
+      "key_interfaces": [
+        "select_folder()",
+        "get_selected_vars()",
+        "start_download()",
+        "stop_download()",
+        "monitor_speed()"
+      ],
+      "dependencies": [
+        "customtkinter >= 5.0.0",
+        "boto3 >= 1.28.0",
+        "botocore",
+        "tkinter (标准库)",
+        "concurrent.futures (标准库)",
+        "threading (标准库)",
+        "queue (标准库)"
+      ],
+      "data_models": [
+        "ERA5_VARS - 变量字典（动力/热力学/湿度/云物理/化学成分）",
+        "files_to_download - 文件信息列表（Key/Size/Var/Name）"
+      ],
+      "tests": {
+        "exists": false,
+        "framework": null,
+        "coverage": 0,
+        "gaps": [
+          "单元测试：变量选择逻辑",
+          "集成测试：S3 连接与下载",
+          "UI 测试：交互与状态管理"
+        ]
+      },
+      "quality_tools": {
+        "formatter": null,
+        "linter": null,
+        "type_checker": null
+      },
+      "important_paths": [
+        "ERA5download_GUI.py"
+      ],
+      "documentation": "CLAUDE.md",
+      "coverage": "full",
+      "gaps": []
+    },
+    ".spec-workflow": {
+      "path": ".spec-workflow",
+      "type": "documentation",
+      "language": "Markdown",
+      "description": "工作流模板",
+      "templates": [
+        "requirements-template.md",
+        "design-template.md",
+        "tasks-template.md",
+        "product-template.md",
+        "tech-template.md",
+        "structure-template.md"
+      ],
+      "coverage": "partial",
+      "gaps": [
+        "未扫描模板文件详细内容"
+      ]
+    }
+  },
+  "gaps": {
+    "missing_tests": true,
+    "missing_quality_tools": true,
+    "missing_dependencies_file": true,
+    "missing_readme": true,
+    "recommendations": [
+      "添加 requirements.txt 依赖清单",
+      "编写单元测试覆盖核心逻辑",
+      "配置代码质量工具（black/pylint/mypy）",
+      "补充 README.md 使用说明",
+      "重构为模块化结构（分离 GUI/下载/配置）",
+      "添加日志系统（logging 模块）",
+      "实现命令行参数支持"
+    ]
+  },
+  "truncated": false,
+  "next_steps": [
+    "创建 requirements.txt 文件",
+    "编写 pytest 单元测试",
+    "配置 .gitignore 文件",
+    "补充 README.md 用户文档",
+    "考虑拆分 ERA5download_GUI.py 为多个模块"
+  ]
+}
