@@ -777,6 +777,11 @@ class AutoDownloader:
         self.failed_files = []
         self.config = None
 
+        # 实时进度监控
+        self.thread_progress = {}  # {slot_id: {'file': name, 'var': var, 'pct': 0.0-1.0, 'status': text}}
+        self.progress_lock = threading.Lock()
+        self.last_progress_print = 0
+
     def load_config(self):
         """加载配置文件"""
         try:
@@ -929,6 +934,11 @@ class AutoDownloader:
             failed_count = 0
             start_time = time.time()
 
+            # 启动进度监控线程
+            import concurrent.futures
+            progress_monitor = threading.Thread(target=self.monitor_progress, args=(len(remaining_files),), daemon=True)
+            progress_monitor.start()
+
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {}
                 for f_info in remaining_files:
@@ -974,16 +984,21 @@ class AutoDownloader:
             return False
 
     def download_one(self, f_info, target_dir, cfg, slot_queue):
-        """下载单个文件"""
+        """下载单个文件（支持实时进度更新）"""
         sid = slot_queue.get()
         local_path = os.path.join(target_dir, f_info['Name'])
         temp_path = local_path + ".tmp"
+        short_name = f_info['Name'][-25:]  # 文件名后25个字符
 
         try:
+            # 更新状态：开始
+            self._update_thread_progress(sid, f_info['Var'], short_name, 0.0, "开始下载...")
+
             # 检查本地文件
             if os.path.exists(local_path):
                 local_size = os.path.getsize(local_path)
                 if local_size == f_info['Size']:
+                    self._update_thread_progress(sid, f_info['Var'], short_name, 1.0, "已存在")
                     return  # 已存在
 
             # 断点续传
@@ -993,6 +1008,10 @@ class AutoDownloader:
                 if downloaded_bytes >= f_info['Size']:
                     os.remove(temp_path)
                     downloaded_bytes = 0
+                elif downloaded_bytes > 0:
+                    pct = downloaded_bytes / f_info['Size']
+                    self._update_thread_progress(sid, f_info['Var'], short_name, pct,
+                                             f"断点续传 {self.format_size(downloaded_bytes)}")
 
             # Range请求（仅当需要断点续传时）
             get_params = {
@@ -1005,22 +1024,94 @@ class AutoDownloader:
             response = self.s3_client.get_object(**get_params)
 
             mode = 'ab' if downloaded_bytes > 0 else 'wb'
+            last_update = time.time()
+
             with open(temp_path, mode) as f:
                 for chunk in response['Body'].iter_chunks(chunk_size=self.chunk_size):
                     f.write(chunk)
+                    downloaded_bytes += len(chunk)
+
+                    # 更新进度（每0.2秒更新一次，避免过于频繁）
+                    current_time = time.time()
+                    if current_time - last_update >= 5:
+                        pct = downloaded_bytes / f_info['Size']
+                        self._update_thread_progress(sid, f_info['Var'], short_name, pct, f"{int(pct*100)}%")
+                        last_update = current_time
 
             # 验证并重命名
             final_size = os.path.getsize(temp_path)
             if final_size == f_info['Size']:
                 os.rename(temp_path, local_path)
                 self.update_progress(target_dir, f_info['Name'], completed=True)
+                self._update_thread_progress(sid, f_info['Var'], short_name, 1.0, "完成")
             else:
                 raise FileIncompleteException(f"大小不匹配: {final_size} != {f_info['Size']}")
 
         except Exception as e:
+            self._update_thread_progress(sid, "ERR", "失败", 0.0, f"{type(e).__name__}")
             raise
         finally:
+            # 清理进度（下载完成后）
+            with self.progress_lock:
+                if sid in self.thread_progress:
+                    del self.thread_progress[sid]
             slot_queue.put(sid)
+
+    def _update_thread_progress(self, sid, var, name, pct, status):
+        """更新线程进度（线程安全）"""
+        with self.progress_lock:
+            self.thread_progress[sid] = {
+                'var': var,
+                'name': name,
+                'pct': pct,
+                'status': status
+            }
+
+    def monitor_progress(self, total_files):
+        """监控并打印实时进度（在独立线程中运行）"""
+        import sys
+        last_line_count = 0
+
+        while not self.stop_requested:
+            time.sleep(0.5)  # 每0.5秒更新一次
+
+            with self.progress_lock:
+                if not self.thread_progress:
+                    continue
+
+                # 构建进度显示
+                lines = []
+                lines.append(f"\n{'='*80}")
+                lines.append(f"实时下载进度 (活跃线程: {len(self.thread_progress)})")
+                lines.append(f"{'='*80}")
+
+                # 按线程ID排序显示
+                for sid in sorted(self.thread_progress.keys()):
+                    info = self.thread_progress[sid]
+                    var = info['var']
+                    name = info['name']
+                    pct = info['pct']
+                    status = info['status']
+
+                    # 构建进度条
+                    bar_width = 40
+                    filled = int(bar_width * pct)
+                    bar = '[' + '=' * filled + ' ' * (bar_width - filled) + ']'
+
+                    line = f"线程-{sid+1:2d} | [{var}] ...{name}\n"
+                    line += f"        {bar} {pct*100:5.1f}% | {status}"
+                    lines.append(line)
+
+                lines.append(f"{'='*80}\n")
+
+                # 清除之前的输出（仅保留最后一屏）
+                output = '\n'.join(lines)
+                print(output, end='', flush=True)
+
+            # 如果没有活跃线程，退出监控
+            with self.progress_lock:
+                if not self.thread_progress:
+                    break
 
 
 # 全局回调对象(用于进度更新)
